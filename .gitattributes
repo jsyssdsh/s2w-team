@@ -1,0 +1,7 @@
+* text=auto
+
+# Shell scripts break under bash if checked out with CRLF
+*.sh text eol=lf
+
+# PowerShell is native to the Windows host this runs on
+*.ps1 text eol=crlf
