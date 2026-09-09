@@ -1,4 +1,4 @@
-"""SSE streaming endpoint for live price updates."""
+"""SSE streaming endpoint factory for live series (crop prices, sensor readings)."""
 
 from __future__ import annotations
 
@@ -14,23 +14,26 @@ from .cache import PriceCache
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/stream", tags=["streaming"])
 
+def create_stream_router(
+    price_cache: PriceCache, path: str = "/prices", tag: str = "streaming"
+) -> APIRouter:
+    """Create an SSE streaming router bound to one PriceCache.
 
-def create_stream_router(price_cache: PriceCache) -> APIRouter:
-    """Create the SSE streaming router with a reference to the price cache.
-
-    This factory pattern lets us inject the PriceCache without globals.
+    This factory pattern lets us inject the PriceCache without globals, and
+    lets the caller mount independent streams (crop prices, sensor readings)
+    at different paths off the same /api/stream prefix.
     """
+    router = APIRouter(prefix="/api/stream", tags=[tag])
 
-    @router.get("/prices")
-    async def stream_prices(request: Request) -> StreamingResponse:
-        """SSE endpoint for live price updates.
+    @router.get(path)
+    async def stream(request: Request) -> StreamingResponse:
+        """SSE endpoint for live updates.
 
-        Streams all tracked ticker prices every ~500ms. The client connects
-        with EventSource and receives events in the format:
+        Streams every tracked series every ~500ms. The client connects with
+        EventSource and receives events in the format:
 
-            data: {"AAPL": {"ticker": "AAPL", "price": 190.50, ...}, ...}
+            data: {"토마토": {"code": "토마토", "price": 2450.0, ...}, ...}
 
         Includes a retry directive so the browser auto-reconnects on
         disconnection (EventSource built-in behavior).
@@ -53,9 +56,9 @@ async def _generate_events(
     request: Request,
     interval: float = 0.5,
 ) -> AsyncGenerator[str, None]:
-    """Async generator that yields SSE-formatted price events.
+    """Async generator that yields SSE-formatted events.
 
-    Sends all prices every `interval` seconds. Stops when the client
+    Sends all values every `interval` seconds. Stops when the client
     disconnects (detected via request.is_disconnected()).
     """
     # Tell the client to retry after 1 second if the connection drops
@@ -75,11 +78,11 @@ async def _generate_events(
             current_version = price_cache.version
             if current_version != last_version:
                 last_version = current_version
-                prices = price_cache.get_all()
+                values = price_cache.get_all()
 
-                if prices:
-                    data = {ticker: update.to_dict() for ticker, update in prices.items()}
-                    payload = json.dumps(data)
+                if values:
+                    data = {code: update.to_dict() for code, update in values.items()}
+                    payload = json.dumps(data, ensure_ascii=False)
                     yield f"data: {payload}\n\n"
 
             await asyncio.sleep(interval)
