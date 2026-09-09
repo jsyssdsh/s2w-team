@@ -1,48 +1,56 @@
-"use client";
+"use client"
 
-import type { ConnectionStatus } from "@/lib/types";
-import { formatCurrency } from "@/lib/format";
+import Link from "next/link"
+import { usePathname } from "next/navigation"
 
-interface HeaderProps {
-  totalValue: number;
-  cashBalance: number;
-  status: ConnectionStatus;
-}
+const NAV_ITEMS = [
+  { href: "/", label: "홈" },
+  { href: "/farm", label: "농가 대시보드" },
+  { href: "/distributor", label: "유통업체 대시보드" },
+  { href: "/idle-land", label: "유휴토지 지도" },
+]
 
-const statusColors: Record<ConnectionStatus, string> = {
-  connected: "bg-gain",
-  connecting: "bg-accent-yellow",
-  disconnected: "bg-loss",
-};
+// Every <Link> in this app sets prefetch={false} -- output: "export" writes
+// each route's RSC payload as a static .txt file, but not at the URL/query
+// shape Next's client prefetcher requests, so the default hover/viewport
+// prefetch just 404s in the console with no functional benefit (every page
+// here fetches its own data client-side on mount regardless).
 
-const statusLabels: Record<ConnectionStatus, string> = {
-  connected: "Live",
-  connecting: "Connecting...",
-  disconnected: "Disconnected",
-};
+export default function Header() {
+  const pathname = usePathname()
 
-export default function Header({ totalValue, cashBalance, status }: HeaderProps) {
   return (
-    <header className="flex items-center justify-between border-b border-border bg-bg-panel px-4 py-2">
-      <div className="flex items-center gap-3">
-        <h1 className="text-lg font-bold text-accent-yellow tracking-wide">FinAlly</h1>
-        <span className="text-text-muted text-xs">AI Trading Workstation</span>
-      </div>
+    <header className="border-b border-line bg-paper-raised">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <Link href="/" prefetch={false} className="flex items-baseline gap-2">
+          <span className="font-display text-lg font-bold tracking-tight text-forest-deep">
+            울퉁불퉁 농장 AI
+          </span>
+          <span className="hidden text-xs text-ink-muted sm:inline">FarmFlow AI</span>
+        </Link>
 
-      <div className="flex items-center gap-6 text-sm">
-        <div>
-          <span className="text-text-muted mr-2">Portfolio</span>
-          <span className="font-bold text-text-primary">{formatCurrency(totalValue)}</span>
-        </div>
-        <div>
-          <span className="text-text-muted mr-2">Cash</span>
-          <span className="font-bold text-text-primary">{formatCurrency(cashBalance)}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className={`inline-block h-2 w-2 rounded-full ${statusColors[status]}`} />
-          <span className="text-text-muted text-xs">{statusLabels[status]}</span>
-        </div>
+        <nav aria-label="주요 화면" className="flex items-center gap-1">
+          {NAV_ITEMS.map((item) => {
+            const isActive =
+              item.href === "/" ? pathname === "/" : pathname?.startsWith(item.href)
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                prefetch={false}
+                aria-current={isActive ? "page" : undefined}
+                className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                  isActive
+                    ? "bg-forest text-paper-raised"
+                    : "text-ink-muted hover:bg-forest-tint hover:text-forest-deep"
+                }`}
+              >
+                {item.label}
+              </Link>
+            )
+          })}
+        </nav>
       </div>
     </header>
-  );
+  )
 }

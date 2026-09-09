@@ -1,40 +1,27 @@
-import { render, screen } from "@testing-library/react";
-import Header from "@/components/Header";
+import { render, screen } from "@testing-library/react"
+import Header from "@/components/Header"
+
+jest.mock("next/navigation", () => ({
+  usePathname: () => "/farm",
+}))
 
 describe("Header", () => {
-  it("renders portfolio value and cash balance", () => {
-    render(
-      <Header totalValue={12345.67} cashBalance={5000} status="connected" />
-    );
-    expect(screen.getByText("$12,345.67")).toBeInTheDocument();
-    expect(screen.getByText("$5,000.00")).toBeInTheDocument();
-  });
+  it("renders the brand name", () => {
+    render(<Header />)
+    expect(screen.getByText("울퉁불퉁 농장 AI")).toBeInTheDocument()
+  })
 
-  it("renders FinAlly branding", () => {
-    render(
-      <Header totalValue={10000} cashBalance={10000} status="connected" />
-    );
-    expect(screen.getByText("FinAlly")).toBeInTheDocument();
-  });
+  it("renders links to every screen", () => {
+    render(<Header />)
+    expect(screen.getByRole("link", { name: "홈" })).toHaveAttribute("href", "/")
+    expect(screen.getByRole("link", { name: "농가 대시보드" })).toHaveAttribute("href", "/farm")
+    expect(screen.getByRole("link", { name: "유통업체 대시보드" })).toHaveAttribute("href", "/distributor")
+    expect(screen.getByRole("link", { name: "유휴토지 지도" })).toHaveAttribute("href", "/idle-land")
+  })
 
-  it("shows Live when connected", () => {
-    render(
-      <Header totalValue={10000} cashBalance={10000} status="connected" />
-    );
-    expect(screen.getByText("Live")).toBeInTheDocument();
-  });
-
-  it("shows Connecting... when connecting", () => {
-    render(
-      <Header totalValue={10000} cashBalance={10000} status="connecting" />
-    );
-    expect(screen.getByText("Connecting...")).toBeInTheDocument();
-  });
-
-  it("shows Disconnected when disconnected", () => {
-    render(
-      <Header totalValue={10000} cashBalance={10000} status="disconnected" />
-    );
-    expect(screen.getByText("Disconnected")).toBeInTheDocument();
-  });
-});
+  it("marks the current page as active", () => {
+    render(<Header />)
+    expect(screen.getByRole("link", { name: "농가 대시보드" })).toHaveAttribute("aria-current", "page")
+    expect(screen.getByRole("link", { name: "홈" })).not.toHaveAttribute("aria-current")
+  })
+})

@@ -1,60 +1,55 @@
 """Fixtures for route tests."""
 
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.db import init_db, set_db_path
-from app.market import PriceCache
+from app.db import init_db, seed_demo_data, set_db_path
 
 
 @pytest.fixture
 async def test_db(tmp_path):
-    """Create a temporary test database."""
+    """Create a temporary test database, seeded with the SPEC demo dataset."""
     db_path = str(tmp_path / "test.db")
     set_db_path(db_path)
     await init_db()
+    await seed_demo_data()
     yield db_path
-    # Reset to default after test
     set_db_path(str(tmp_path / "unused.db"))
 
 
 @pytest.fixture
-def price_cache():
-    """A PriceCache with some test prices."""
-    cache = PriceCache()
-    cache.update("AAPL", 190.50)
-    cache.update("GOOGL", 175.25)
-    cache.update("MSFT", 420.00)
-    return cache
+async def client(test_db, monkeypatch):
+    """Async HTTP client wired to the FastAPI app, bypassing lifespan.
 
+    LLM_MOCK=true routes every app.llm call through the deterministic
+    template functions in app.llm.mock instead of a real network call.
+    """
+    monkeypatch.setenv("LLM_MOCK", "true")
 
-@pytest.fixture
-async def client(test_db, price_cache):
-    """Async HTTP client wired to the FastAPI app, bypassing lifespan."""
     from fastapi import FastAPI
 
     from app.routes.chat import router as chat_router
-    from app.routes.portfolio import router as portfolio_router
-    from app.routes.watchlist import router as watchlist_router
+    from app.routes.crops import router as crops_router
+    from app.routes.farmer import router as farmer_router
+    from app.routes.farmland import router as farmland_router
+    from app.routes.sensors import router as sensors_router
+    from app.routes.supply_risk import router as supply_risk_router
+    from app.routes.transactions import router as transactions_router
+    from app.routes.wholesaler import router as wholesaler_router
 
-    # Build a test app without the full lifespan (no market data source needed)
     test_app = FastAPI()
-    test_app.include_router(portfolio_router)
-    test_app.include_router(watchlist_router)
+    test_app.include_router(crops_router)
+    test_app.include_router(farmer_router)
+    test_app.include_router(wholesaler_router)
+    test_app.include_router(farmland_router)
+    test_app.include_router(sensors_router)
+    test_app.include_router(supply_risk_router)
+    test_app.include_router(transactions_router)
     test_app.include_router(chat_router)
 
     @test_app.get("/api/health")
     async def health():
         return {"status": "ok"}
-
-    # Mock market source
-    class MockSource:
-        async def add_ticker(self, ticker): pass
-        async def remove_ticker(self, ticker): pass
-
-    test_app.state.price_cache = price_cache
-    test_app.state.market_source = MockSource()
 
     transport = ASGITransport(app=test_app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

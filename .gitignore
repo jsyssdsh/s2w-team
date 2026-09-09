@@ -1,5 +1,5 @@
 .runtime/
-.claude/
+.claude/settings.local.json
 .beads/
 .logs/
 
@@ -11,15 +11,20 @@ __pycache__/
 # Environment
 .env
 
-# Database
-db/
-**/db/finally.db
+# Database (runtime files only - schema.sql/seed.sql are source)
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
 
 # Next.js
 .next/
 out/
+# static export copied in at build time (see Dockerfile)
+backend/static/
 
 # Test artifacts
 .pytest_cache/
 test-results/
 playwright-report/
+.playwright-mcp/

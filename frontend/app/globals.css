@@ -1,63 +1,77 @@
 @import "tailwindcss";
 
+/* Palette: an agricultural field-ledger, not a trading terminal or a SaaS
+   card kit. Paper/soil tones carry the page; forest green is the one brand
+   accent; wheat and brick are reserved for data (price highlights, status). */
 @theme inline {
-  --color-bg-primary: #0d1117;
-  --color-bg-secondary: #1a1a2e;
-  --color-bg-panel: #161b22;
-  --color-bg-hover: #21262d;
-  --color-border: #30363d;
-  --color-text-primary: #e6edf3;
-  --color-text-secondary: #8b949e;
-  --color-text-muted: #6e7681;
-  --color-accent-yellow: #ecad0a;
-  --color-accent-blue: #209dd7;
-  --color-accent-purple: #753991;
-  --color-gain: #26a641;
-  --color-loss: #f85149;
-  --font-mono: "Geist Mono", ui-monospace, monospace;
-  --font-sans: "Geist", ui-sans-serif, sans-serif;
+  --color-paper: #f3efe2;
+  --color-paper-raised: #faf7ee;
+  --color-ink: #262420;
+  --color-ink-muted: #6e6858;
+  --color-ink-faint: #9a927c;
+  --color-line: #d9d2bc;
+  --color-forest: #2f5233;
+  --color-forest-deep: #1f3a24;
+  --color-forest-tint: #e3ead9;
+  --color-wheat: #b98a1d;
+  --color-brick: #a24328;
+  --color-status-good: #2f7d4f;
+  --color-status-warn: #b98a1d;
+  --color-status-bad: #b23b2e;
+
+  --font-display: var(--font-noto-serif-kr), "Noto Serif KR", serif;
+  --font-body: var(--font-noto-sans-kr), "Noto Sans KR", sans-serif;
+  --font-data: var(--font-geist-mono), ui-monospace, monospace;
 }
 
 body {
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  font-family: var(--font-mono);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
 }
 
-/* Price flash animations */
-@keyframes flash-green {
-  0% { background-color: rgba(38, 166, 65, 0.3); }
+/* Field-survey grid texture for the home hero -- a nod to plot survey maps,
+   not decoration for its own sake. Kept faint and confined to one section. */
+.field-grid {
+  background-image:
+    linear-gradient(var(--color-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+@keyframes sensor-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.sensor-live-dot {
+  animation: sensor-pulse 1.8s ease-in-out infinite;
+}
+
+/* Reading-value flash when a live sensor/price update arrives */
+@keyframes flash-update {
+  0% { background-color: rgba(47, 82, 51, 0.16); }
   100% { background-color: transparent; }
 }
 
-@keyframes flash-red {
-  0% { background-color: rgba(248, 81, 73, 0.3); }
-  100% { background-color: transparent; }
+.value-flash {
+  animation: flash-update 600ms ease-out;
 }
 
-.price-flash-up {
-  animation: flash-green 500ms ease-out;
-}
-
-.price-flash-down {
-  animation: flash-red 500ms ease-out;
-}
-
-/* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-bg-primary);
+  background: var(--color-paper);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
+  background: var(--color-line);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
+  background: var(--color-ink-faint);
 }

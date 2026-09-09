@@ -1,0 +1,25 @@
+# Keep the build context small and avoid shipping local/dev-only state into the image.
+
+.git/
+.github/
+.claude/
+planning/
+
+# Dependencies / build output regenerated inside the image
+**/node_modules/
+frontend/.next/
+frontend/out/
+backend/.venv/
+backend/**/__pycache__/
+backend/.pytest_cache/
+
+# Local env and data -- never bake secrets or a dev database into the image
+.env
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
+
+# Editor/OS cruft
+.vscode/
+*.log

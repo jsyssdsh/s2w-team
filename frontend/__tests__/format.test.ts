@@ -1,47 +1,57 @@
-import { formatCurrency, formatPercent, formatPrice } from "@/lib/format";
+import { formatDate, formatKg, formatKrw, formatPercent, formatPyeong, formatTime } from "@/lib/format"
 
-describe("formatCurrency", () => {
-  it("formats positive values as USD", () => {
-    expect(formatCurrency(10000)).toBe("$10,000.00");
-  });
-
-  it("formats decimal values", () => {
-    expect(formatCurrency(190.5)).toBe("$190.50");
-  });
+describe("formatKrw", () => {
+  it("formats positive values as KRW with no decimals", () => {
+    expect(formatKrw(10000)).toBe("₩10,000")
+  })
 
   it("formats zero", () => {
-    expect(formatCurrency(0)).toBe("$0.00");
-  });
+    expect(formatKrw(0)).toBe("₩0")
+  })
 
   it("formats large values with commas", () => {
-    expect(formatCurrency(1234567.89)).toBe("$1,234,567.89");
-  });
-});
+    expect(formatKrw(1234567)).toBe("₩1,234,567")
+  })
+})
 
 describe("formatPercent", () => {
   it("formats positive percent with plus sign", () => {
-    expect(formatPercent(2.5)).toBe("+2.50%");
-  });
+    expect(formatPercent(2.5)).toBe("+2.5%")
+  })
 
   it("formats negative percent with minus sign", () => {
-    expect(formatPercent(-1.23)).toBe("-1.23%");
-  });
+    expect(formatPercent(-1.23)).toBe("-1.2%")
+  })
 
   it("formats zero percent with plus sign", () => {
-    expect(formatPercent(0)).toBe("+0.00%");
-  });
-});
+    expect(formatPercent(0)).toBe("+0.0%")
+  })
+})
 
-describe("formatPrice", () => {
-  it("formats with two decimal places", () => {
-    expect(formatPrice(190.5)).toBe("190.50");
-  });
+describe("formatKg", () => {
+  it("appends kg suffix with thousands separators", () => {
+    expect(formatKg(1000)).toBe("1,000kg")
+  })
+})
 
-  it("truncates extra decimals", () => {
-    expect(formatPrice(190.567)).toBe("190.57");
-  });
+describe("formatPyeong", () => {
+  it("appends 평 suffix", () => {
+    expect(formatPyeong(900)).toBe("900평")
+  })
+})
 
-  it("formats whole numbers", () => {
-    expect(formatPrice(100)).toBe("100.00");
-  });
-});
+describe("formatDate", () => {
+  it("formats an ISO date as Korean month/day", () => {
+    expect(formatDate("2026-08-10T00:00:00Z")).toContain("8")
+  })
+
+  it("returns the original string for an invalid date", () => {
+    expect(formatDate("not-a-date")).toBe("not-a-date")
+  })
+})
+
+describe("formatTime", () => {
+  it("returns the original string for an invalid time", () => {
+    expect(formatTime("not-a-date")).toBe("not-a-date")
+  })
+})

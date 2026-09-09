@@ -1,9 +1,9 @@
-"""FinAlly Market Data Simulator Demo.
+"""S2W Crop Price Simulator Demo.
 
 Run with:  uv run market_data_demo.py
 
-Displays a live-updating terminal dashboard of simulated stock prices
-using the GBM simulator and Rich library.
+Displays a live-updating terminal dashboard of simulated crop wholesale
+prices using CropPriceSimulator and the Rich library.
 """
 
 from __future__ import annotations
@@ -20,14 +20,13 @@ from rich.table import Table
 from rich.text import Text
 
 from app.market.cache import PriceCache
-from app.market.seed_prices import SEED_PRICES
-from app.market.simulator import SimulatorDataSource
+from app.market.crop_price_simulator import CropPriceStream
+from app.market.seed_data import SEED_CROP_PRICES
 
 # Sparkline characters, low to high
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
-# Ordered ticker list matching the default watchlist
-TICKERS = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "JPM", "V", "NFLX"]
+CROPS = list(SEED_CROP_PRICES.keys())
 
 DURATION = 60  # seconds
 
@@ -45,10 +44,8 @@ def sparkline(values: list[float]) -> str:
 
 
 def format_price(price: float) -> str:
-    """Format a price with comma separator."""
-    if price >= 1000:
-        return f"{price:,.2f}"
-    return f"{price:.2f}"
+    """Format a KRW/kg price with comma separator."""
+    return f"{price:,.0f}"
 
 
 def build_table(
@@ -65,39 +62,39 @@ def build_table(
         pad_edge=True,
         padding=(0, 1),
     )
-    table.add_column("Ticker", style="bold bright_white", width=8)
-    table.add_column("Price", justify="right", width=10)
+    table.add_column("작물", style="bold bright_white", width=8)
+    table.add_column("가격(원/kg)", justify="right", width=12)
     table.add_column("Change", justify="right", width=9)
     table.add_column("Chg %", justify="right", width=8)
     table.add_column("", width=3)  # arrow
     table.add_column("Sparkline", width=42, no_wrap=True)
 
-    for ticker in TICKERS:
-        update = cache.get(ticker)
+    for crop in CROPS:
+        update = cache.get(crop)
         if update is None:
-            table.add_row(ticker, "---", "---", "---", "", "")
+            table.add_row(crop, "---", "---", "---", "", "")
             continue
 
         # Direction styling
         if update.direction == "up":
             color = "green"
-            arrow = "[bold green]\u25b2[/]"
+            arrow = "[bold green]▲[/]"
         elif update.direction == "down":
             color = "red"
-            arrow = "[bold red]\u25bc[/]"
+            arrow = "[bold red]▼[/]"
         else:
             color = "bright_black"
-            arrow = "[bright_black]\u2500[/]"
+            arrow = "[bright_black]─[/]"
 
-        price_str = f"[{color}]${format_price(update.price)}[/]"
+        price_str = f"[{color}]{format_price(update.price)}원[/]"
         change_str = f"[{color}]{update.change:+.2f}[/]"
         pct_str = f"[{color}]{update.change_percent:+.2f}%[/]"
 
         # Sparkline from history
-        vals = list(history.get(ticker, []))
+        vals = list(history.get(crop, []))
         spark_str = f"[bright_cyan]{sparkline(vals)}[/]" if len(vals) > 1 else ""
 
-        table.add_row(ticker, price_str, change_str, pct_str, arrow, spark_str)
+        table.add_row(crop, price_str, change_str, pct_str, arrow, spark_str)
 
     return table
 
@@ -137,14 +134,14 @@ def build_dashboard(
 
     # Header
     header_text = Text.assemble(
-        ("  FinAlly ", "bold bright_yellow"),
-        ("Market Data Simulator", "bold bright_white"),
+        ("  S2W ", "bold bright_yellow"),
+        ("농산물 시세 시뮬레이터", "bold bright_white"),
         ("  |  ", "bright_black"),
         (f"{elapsed:5.1f}s elapsed", "bright_cyan"),
         ("  |  ", "bright_black"),
         (f"{remaining:4.1f}s remaining", "bright_cyan"),
         ("  |  ", "bright_black"),
-        (f"{len(cache)} tickers", "bright_white"),
+        (f"{len(cache)} crops", "bright_white"),
         ("  |  ", "bright_black"),
         ("Ctrl+C to exit", "bright_black italic"),
     )
@@ -169,18 +166,18 @@ def print_summary(cache: PriceCache) -> None:
     """Print final summary comparing to seed prices."""
     console = Console()
     console.print()
-    console.print("[bold bright_yellow]  FinAlly[/] [bold]Session Summary[/]")
+    console.print("[bold bright_yellow]  S2W[/] [bold]Session Summary[/]")
     console.print()
 
     table = Table(border_style="bright_black", header_style="bold bright_white", expand=False)
-    table.add_column("Ticker", style="bold bright_white", width=8)
+    table.add_column("작물", style="bold bright_white", width=8)
     table.add_column("Seed Price", justify="right", width=12)
     table.add_column("Final Price", justify="right", width=12)
     table.add_column("Session Change", justify="right", width=14)
 
-    for ticker in TICKERS:
-        seed = SEED_PRICES.get(ticker, 0)
-        update = cache.get(ticker)
+    for crop in CROPS:
+        seed = SEED_CROP_PRICES.get(crop, 0)
+        update = cache.get(crop)
         if update is None:
             continue
         final = update.price
@@ -194,9 +191,9 @@ def print_summary(cache: PriceCache) -> None:
             color = "bright_black"
 
         table.add_row(
-            ticker,
-            f"${format_price(seed)}",
-            f"[{color}]${format_price(final)}[/]",
+            crop,
+            f"{format_price(seed)}원",
+            f"[{color}]{format_price(final)}원[/]",
             f"[{color}]{session_change:+.2f}%[/]",
         )
 
@@ -207,22 +204,22 @@ def print_summary(cache: PriceCache) -> None:
 async def run() -> None:
     """Main demo loop."""
     cache = PriceCache()
-    source = SimulatorDataSource(price_cache=cache, update_interval=0.5)
+    stream = CropPriceStream(cache, update_interval=0.5)
 
-    # Per-ticker price history for sparklines
-    history: dict[str, deque] = {t: deque(maxlen=40) for t in TICKERS}
+    # Per-crop price history for sparklines
+    history: dict[str, deque] = {c: deque(maxlen=40) for c in CROPS}
 
     # Recent event log
     events: deque = deque(maxlen=12)
 
-    await source.start(TICKERS)
+    await stream.start(CROPS)
     start_time = time.time()
 
     # Seed initial history points
-    for ticker in TICKERS:
-        update = cache.get(ticker)
+    for crop in CROPS:
+        update = cache.get(crop)
         if update:
-            history[ticker].append(update.price)
+            history[crop].append(update.price)
 
     try:
         with Live(
@@ -240,22 +237,22 @@ async def run() -> None:
                 last_version = cache.version
 
                 # Record history & detect events
-                for ticker in TICKERS:
-                    update = cache.get(ticker)
+                for crop in CROPS:
+                    update = cache.get(crop)
                     if update is None:
                         continue
-                    history[ticker].append(update.price)
+                    history[crop].append(update.price)
 
                     # Log notable moves
                     if abs(update.change_percent) > 1.0:
-                        direction = "\u25b2" if update.direction == "up" else "\u25bc"
+                        direction = "▲" if update.direction == "up" else "▼"
                         color = "green" if update.direction == "up" else "red"
                         timestamp = time.strftime("%H:%M:%S")
                         events.appendleft(
                             f"[bright_black]{timestamp}[/]  "
-                            f"[bold {color}]{direction} {ticker}[/]  "
+                            f"[bold {color}]{direction} {crop}[/]  "
                             f"[{color}]{update.change_percent:+.2f}%[/]  "
-                            f"${format_price(update.price)}"
+                            f"{format_price(update.price)}원"
                         )
 
                 live.update(build_dashboard(cache, history, events, start_time))
@@ -263,7 +260,7 @@ async def run() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        await source.stop()
+        await stream.stop()
 
     print_summary(cache)
 

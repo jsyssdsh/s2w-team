@@ -1,267 +1,266 @@
-"""LLM chat service — calls OpenRouter/Cerebras and executes actions."""
+"""LLM service layer for the produce distribution assistant.
 
+Exposes typed async functions the backend calls from routes. Every function
+here either (a) turns already-computed numbers into a structured natural
+language explanation, or (b) drives the chat tool-calling loop. No function
+in this module does ranking, net-profit, or supply/demand math -- that stays
+in deterministic backend code; see the module docstring in models.py.
+"""
+
+import asyncio
+import json
 import logging
 import os
+from typing import TypeVar
 
+from dotenv import load_dotenv
 from litellm import completion
+from pydantic import BaseModel
 
-from app.db import (
-    add_to_watchlist,
-    delete_position,
-    get_cash_balance,
-    get_chat_history,
-    get_position,
-    get_positions,
-    get_watchlist,
-    insert_snapshot,
-    insert_trade,
-    remove_from_watchlist,
-    update_cash_balance,
-    upsert_position,
+from . import mock
+from .models import (
+    BuyerRecommendation,
+    ChatAssistantResult,
+    FarmlandOption,
+    FarmlandRecommendation,
+    FarmlandRequest,
+    PriceForecastExplanation,
+    ProduceLot,
+    ShippingDateOption,
+    SupplyRiskAlert,
+    SupplyRiskInput,
+    ToolCallOutcome,
+    WholesalerOption,
+    WholesalerRecommendation,
 )
-from app.market import MarketDataSource, PriceCache
+from .prompts import (
+    build_buyer_recommendation_messages,
+    build_chat_messages,
+    build_farmland_recommendation_messages,
+    build_price_forecast_messages,
+    build_supply_risk_messages,
+    build_wholesaler_recommendation_messages,
+)
+from .tools import CHAT_TOOLS, ToolExecutor, execute_tool_call
 
-from .mock import mock_chat
-from .models import LlmResponse
+load_dotenv()  # populates OPENROUTER_API_KEY from backend/.env if present
 
 logger = logging.getLogger(__name__)
 
 MODEL = "openrouter/openai/gpt-oss-120b"
 EXTRA_BODY = {"provider": {"order": ["cerebras"]}}
+_MAX_RETRIES = 2
+_MAX_TOOL_ROUNDS = 3
 
-SYSTEM_PROMPT = """You are FinAlly, an AI trading assistant for a simulated trading workstation.
-
-You help users manage a virtual stock portfolio. You can:
-- Analyze portfolio composition, risk concentration, and P&L
-- Suggest trades with clear reasoning
-- Execute trades when asked (buy or sell shares)
-- Add or remove tickers from the watchlist
-
-Rules:
-- This is a simulation with virtual money — no real trades occur
-- All orders are market orders filled at the current price
-- Be concise and data-driven
-- When the user asks you to trade, include the trade in your response
-- When suggesting trades, explain your reasoning briefly
-- Always respond with valid structured JSON matching the required schema"""
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
-async def _build_context(price_cache: PriceCache) -> dict:
-    """Build portfolio context to include in LLM prompt."""
-    cash = await get_cash_balance()
-    positions = await get_positions()
-    watchlist = await get_watchlist()
-
-    enriched_positions = []
-    total_market_value = 0.0
-    for pos in positions:
-        current_price = price_cache.get_price(pos["ticker"]) or pos["avg_cost"]
-        market_value = current_price * pos["quantity"]
-        cost_basis = pos["avg_cost"] * pos["quantity"]
-        unrealized_pnl = market_value - cost_basis
-        enriched_positions.append({
-            "ticker": pos["ticker"],
-            "quantity": pos["quantity"],
-            "avg_cost": round(pos["avg_cost"], 2),
-            "current_price": round(current_price, 2),
-            "market_value": round(market_value, 2),
-            "unrealized_pnl": round(unrealized_pnl, 2),
-        })
-        total_market_value += market_value
-
-    watchlist_with_prices = []
-    for entry in watchlist:
-        ticker = entry["ticker"]
-        price = price_cache.get_price(ticker)
-        watchlist_with_prices.append({
-            "ticker": ticker,
-            "price": round(price, 2) if price else None,
-        })
-
-    total_value = cash + total_market_value
-
-    return {
-        "cash": round(cash, 2),
-        "positions": enriched_positions,
-        "watchlist": watchlist_with_prices,
-        "total_value": round(total_value, 2),
-        "total_market_value": round(total_market_value, 2),
-    }
+class LlmServiceError(RuntimeError):
+    """Raised when an LLM call fails after all retries are exhausted."""
 
 
-def _build_messages(context: dict, history: list[dict], user_message: str) -> list[dict]:
-    """Construct the messages list for the LLM call."""
-    context_text = (
-        f"Portfolio: Cash ${context['cash']:,.2f}, "
-        f"Total value ${context['total_value']:,.2f}\n"
-    )
-    if context["positions"]:
-        context_text += "Positions:\n"
-        for p in context["positions"]:
-            context_text += (
-                f"  {p['ticker']}: {p['quantity']} shares @ avg ${p['avg_cost']:.2f}, "
-                f"now ${p['current_price']:.2f}, P&L ${p['unrealized_pnl']:+.2f}\n"
+def _is_mock_mode() -> bool:
+    return os.environ.get("LLM_MOCK", "").lower() == "true"
+
+
+async def _structured_completion(
+    messages: list[dict[str, str]], response_model: type[_ModelT]
+) -> _ModelT:
+    """Call the LLM for one structured-output response, with retries.
+
+    Runs the (synchronous) litellm call in a worker thread so it doesn't
+    block the event loop the FastAPI route is running on.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            response = await asyncio.to_thread(
+                completion,
+                model=MODEL,
+                messages=messages,
+                response_format=response_model,
+                reasoning_effort="low",
+                extra_body=EXTRA_BODY,
             )
-    else:
-        context_text += "No open positions.\n"
-
-    context_text += "Watchlist: " + ", ".join(
-        f"{w['ticker']} (${w['price']:.2f})" if w["price"] else w["ticker"]
-        for w in context["watchlist"]
-    )
-
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + "\n\nCurrent portfolio state:\n" + context_text},
-    ]
-
-    # Add recent conversation history (last 20 messages)
-    for msg in history[-20:]:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-
-    messages.append({"role": "user", "content": user_message})
-    return messages
+            content = response.choices[0].message.content
+            return response_model.model_validate_json(content)
+        except Exception as exc:  # network errors, malformed JSON, schema mismatch
+            last_exc = exc
+            logger.warning(
+                "LLM structured call failed (attempt %d/%d): %s",
+                attempt + 1,
+                _MAX_RETRIES + 1,
+                exc,
+            )
+    logger.error("LLM structured call exhausted retries", exc_info=last_exc)
+    raise LlmServiceError(f"{response_model.__name__} call failed after retries") from last_exc
 
 
-async def _execute_actions(
-    llm_response: LlmResponse, price_cache: PriceCache, market_source: MarketDataSource
-) -> dict:
-    """Execute trades and watchlist changes from LLM response. Returns results."""
-    trade_results = []
-    watchlist_results = []
+# ---------------------------------------------------------------------------
+# 5.1 시세 예측 근거 설명 및 출하 시기 제안
+# ---------------------------------------------------------------------------
 
-    for trade in llm_response.trades:
-        ticker = trade.ticker.upper()
-        side = trade.side.lower()
-        quantity = trade.quantity
 
-        if side not in ("buy", "sell") or quantity <= 0:
-            trade_results.append({"ticker": ticker, "side": side, "error": "Invalid trade parameters"})
-            continue
+async def explain_price_forecast(
+    crop_name: str, options: list[ShippingDateOption]
+) -> PriceForecastExplanation:
+    if _is_mock_mode():
+        return mock.mock_price_forecast(crop_name, options)
+    messages = build_price_forecast_messages(crop_name, options)
+    return await _structured_completion(messages, PriceForecastExplanation)
 
-        current_price = price_cache.get_price(ticker)
-        if current_price is None:
-            trade_results.append({"ticker": ticker, "side": side, "error": f"No price available for {ticker}"})
-            continue
 
-        cash = await get_cash_balance()
+# ---------------------------------------------------------------------------
+# 5.2 농가 맞춤형 도매처 추천
+# ---------------------------------------------------------------------------
 
-        if side == "buy":
-            cost = current_price * quantity
-            if cost > cash:
-                trade_results.append({
-                    "ticker": ticker, "side": "buy",
-                    "error": f"Insufficient cash. Need ${cost:.2f}, have ${cash:.2f}",
-                })
-                continue
 
-            await update_cash_balance(cash - cost)
-            existing = await get_position(ticker)
-            if existing:
-                total_qty = existing["quantity"] + quantity
-                total_cost = (existing["avg_cost"] * existing["quantity"]) + cost
-                new_avg = total_cost / total_qty
-                await upsert_position(ticker, total_qty, new_avg)
-            else:
-                await upsert_position(ticker, quantity, current_price)
+async def recommend_wholesaler(
+    crop_name: str, options: list[WholesalerOption]
+) -> WholesalerRecommendation:
+    if _is_mock_mode():
+        return mock.mock_wholesaler_recommendation(crop_name, options)
+    messages = build_wholesaler_recommendation_messages(crop_name, options)
+    return await _structured_completion(messages, WholesalerRecommendation)
 
-        else:  # sell
-            existing = await get_position(ticker)
-            if not existing or existing["quantity"] < quantity:
-                held = existing["quantity"] if existing else 0
-                trade_results.append({
-                    "ticker": ticker, "side": "sell",
-                    "error": f"Insufficient shares. Have {held}, trying to sell {quantity}",
-                })
-                continue
 
-            proceeds = current_price * quantity
-            await update_cash_balance(cash + proceeds)
-            remaining = existing["quantity"] - quantity
-            if remaining > 0:
-                await upsert_position(ticker, remaining, existing["avg_cost"])
-            else:
-                await delete_position(ticker)
+# ---------------------------------------------------------------------------
+# 5.3 도매처 맞춤 판매처 연계
+# ---------------------------------------------------------------------------
 
-        await insert_trade(ticker, side, quantity, current_price)
-        trade_results.append({
-            "ticker": ticker, "side": side, "quantity": quantity,
-            "price": current_price, "status": "executed",
-        })
 
-    # Record portfolio snapshot after trades
-    if trade_results:
-        new_cash = await get_cash_balance()
-        positions = await get_positions()
-        total_value = new_cash
-        for pos in positions:
-            price = price_cache.get_price(pos["ticker"]) or pos["avg_cost"]
-            total_value += price * pos["quantity"]
-        await insert_snapshot(round(total_value, 2))
+async def recommend_buyers(lots: list[ProduceLot]) -> BuyerRecommendation:
+    if _is_mock_mode():
+        return mock.mock_buyer_recommendation(lots)
+    messages = build_buyer_recommendation_messages(lots)
+    return await _structured_completion(messages, BuyerRecommendation)
 
-    for change in llm_response.watchlist_changes:
-        ticker = change.ticker.upper()
-        action = change.action.lower()
-        if action == "add":
+
+# ---------------------------------------------------------------------------
+# 5.4 지역별 수급 위험 조기 알림
+# ---------------------------------------------------------------------------
+
+
+async def generate_supply_risk_alert(risk_input: SupplyRiskInput) -> SupplyRiskAlert:
+    if _is_mock_mode():
+        return mock.mock_supply_risk_alert(risk_input)
+    messages = build_supply_risk_messages(risk_input)
+    return await _structured_completion(messages, SupplyRiskAlert)
+
+
+# ---------------------------------------------------------------------------
+# 5.6 유휴농지 맞춤형 탐색 및 농업인 연결
+# ---------------------------------------------------------------------------
+
+
+async def recommend_farmland(
+    request: FarmlandRequest, options: list[FarmlandOption]
+) -> FarmlandRecommendation:
+    if _is_mock_mode():
+        return mock.mock_farmland_recommendation(request, options)
+    messages = build_farmland_recommendation_messages(request, options)
+    return await _structured_completion(messages, FarmlandRecommendation)
+
+
+# ---------------------------------------------------------------------------
+# 채팅 어시스턴트 (tool call 포함)
+# ---------------------------------------------------------------------------
+
+_CHAT_FALLBACK_MESSAGE = "죄송합니다, 요청을 처리하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+
+
+async def run_chat_assistant(
+    user_message: str,
+    history: list[dict[str, str]],
+    tool_executors: dict[str, ToolExecutor],
+    context: str | None = None,
+) -> ChatAssistantResult:
+    """Run one chat turn, executing any tools the model calls.
+
+    `tool_executors` maps tool name (see tools.CHAT_TOOLS) to an async
+    function the backend supplies that performs the real work (DB writes,
+    matching, etc.) and returns a JSON-serializable result dict.
+    """
+    if _is_mock_mode():
+        return await mock.mock_chat(user_message, context, tool_executors)
+
+    messages = build_chat_messages(context, history, user_message)
+    tool_outcomes: list[ToolCallOutcome] = []
+
+    for _ in range(_MAX_TOOL_ROUNDS):
+        try:
+            response = await asyncio.to_thread(
+                completion,
+                model=MODEL,
+                messages=messages,
+                tools=CHAT_TOOLS,
+                reasoning_effort="low",
+                extra_body=EXTRA_BODY,
+            )
+        except Exception:
+            logger.exception("Chat completion failed")
+            return ChatAssistantResult(message=_CHAT_FALLBACK_MESSAGE, tool_calls=tool_outcomes)
+
+        choice_message = response.choices[0].message
+        raw_tool_calls = getattr(choice_message, "tool_calls", None)
+
+        if not raw_tool_calls:
+            return ChatAssistantResult(message=choice_message.content or "", tool_calls=tool_outcomes)
+
+        # Preserve the assistant's tool-call turn so the follow-up call has
+        # the full exchange, matching the OpenAI-style tool-calling protocol.
+        messages.append(
+            {
+                "role": "assistant",
+                "content": choice_message.content or "",
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments,
+                        },
+                    }
+                    for call in raw_tool_calls
+                ],
+            }
+        )
+
+        for call in raw_tool_calls:
             try:
-                await add_to_watchlist(ticker)
-            except Exception as exc:
-                watchlist_results.append({"ticker": ticker, "action": "add", "error": str(exc)})
-                continue
-            await market_source.add_ticker(ticker)
-            watchlist_results.append({"ticker": ticker, "action": "add", "status": "done"})
-        elif action == "remove":
-            removed = await remove_from_watchlist(ticker)
-            if removed:
-                await market_source.remove_ticker(ticker)
-                price_cache.remove(ticker)
-                watchlist_results.append({"ticker": ticker, "action": "remove", "status": "done"})
+                arguments = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError as exc:
+                outcome = ToolCallOutcome(
+                    name=call.function.name, arguments={}, error=f"Invalid arguments JSON: {exc}"
+                )
             else:
-                watchlist_results.append({"ticker": ticker, "action": "remove", "error": "Not in watchlist"})
+                outcome = await execute_tool_call(call.function.name, arguments, tool_executors)
 
-    return {"trades": trade_results, "watchlist_changes": watchlist_results}
+            tool_outcomes.append(outcome)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": json.dumps(
+                        outcome.result if outcome.error is None else {"error": outcome.error},
+                        ensure_ascii=False,
+                    ),
+                }
+            )
 
-
-async def chat_with_llm(
-    user_message: str, price_cache: PriceCache, market_source: MarketDataSource
-) -> dict:
-    """Process a chat message: call LLM (or mock), execute actions, return response."""
-    context = await _build_context(price_cache)
-
-    # Mock mode
-    if os.environ.get("LLM_MOCK", "").lower() == "true":
-        llm_response = mock_chat(user_message, context)
-        action_results = await _execute_actions(llm_response, price_cache, market_source)
-        return {
-            "message": llm_response.message,
-            "trades": action_results["trades"],
-            "watchlist_changes": action_results["watchlist_changes"],
-        }
-
-    # Real LLM call
-    history = await get_chat_history(limit=20)
-    messages = _build_messages(context, history, user_message)
-
+    # Ran out of tool-call rounds: ask once more for a plain summary.
     try:
-        response = completion(
+        response = await asyncio.to_thread(
+            completion,
             model=MODEL,
             messages=messages,
-            response_format=LlmResponse,
             reasoning_effort="low",
             extra_body=EXTRA_BODY,
         )
-        content = response.choices[0].message.content
-        llm_response = LlmResponse.model_validate_json(content)
+        final_message = response.choices[0].message.content or ""
     except Exception:
-        logger.exception("LLM call failed")
-        return {
-            "message": "Sorry, I encountered an error processing your request. Please try again.",
-            "trades": [],
-            "watchlist_changes": [],
-        }
+        logger.exception("Chat completion failed on final summary")
+        final_message = _CHAT_FALLBACK_MESSAGE
 
-    action_results = await _execute_actions(llm_response, price_cache, market_source)
-    return {
-        "message": llm_response.message,
-        "trades": action_results["trades"],
-        "watchlist_changes": action_results["watchlist_changes"],
-    }
+    return ChatAssistantResult(message=final_message, tool_calls=tool_outcomes)
