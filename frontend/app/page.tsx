@@ -1,120 +1,48 @@
-"use client";
-
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { usePrices } from "@/lib/use-prices";
-import { getPortfolio, getWatchlist } from "@/lib/api";
-import type { Portfolio, WatchlistItem } from "@/lib/types";
-import Header from "@/components/Header";
-import Watchlist from "@/components/Watchlist";
-import PriceChart from "@/components/PriceChart";
-import PositionsTable from "@/components/PositionsTable";
-import PortfolioHeatmap from "@/components/PortfolioHeatmap";
-import PnlChart from "@/components/PnlChart";
-import TradeBar from "@/components/TradeBar";
-import ChatPanel from "@/components/ChatPanel";
-
-async function fetchPortfolio(setter: (p: Portfolio) => void) {
-  try {
-    const data = await getPortfolio();
-    setter(data);
-  } catch {
-    // Retry on next interval
-  }
-}
-
-async function fetchWatchlist(setter: (w: WatchlistItem[]) => void) {
-  try {
-    const data = await getWatchlist();
-    setter(data);
-  } catch {
-    // Retry on next interval
-  }
-}
+import Header from "@/components/Header"
+import EntryCard from "@/components/EntryCard"
 
 export default function Home() {
-  const { prices, status, getHistory } = usePrices();
-  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
-  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
-  const [userSelectedTicker, setUserSelectedTicker] = useState<string | null>(null);
-
-  // Derive the effective selected ticker: user selection, or first watchlist item
-  const selectedTicker = useMemo(() => {
-    if (userSelectedTicker) return userSelectedTicker;
-    return watchlist.length > 0 ? watchlist[0].ticker : null;
-  }, [userSelectedTicker, watchlist]);
-
-  const refreshWatchlist = useCallback(() => {
-    fetchWatchlist(setWatchlist);
-  }, []);
-
-  const refreshAll = useCallback(() => {
-    fetchPortfolio(setPortfolio);
-    fetchWatchlist(setWatchlist);
-  }, []);
-
-  // Periodic data refresh via subscription to external system (API)
-  useEffect(() => {
-    fetchPortfolio(setPortfolio);
-    fetchWatchlist(setWatchlist);
-    const interval = setInterval(() => {
-      fetchPortfolio(setPortfolio);
-      fetchWatchlist(setWatchlist);
-    }, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
-      <Header
-        totalValue={portfolio?.total_value ?? 10000}
-        cashBalance={portfolio?.cash_balance ?? 10000}
-        status={status}
-      />
+    <div className="min-h-screen bg-paper">
+      <Header />
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        <section className="field-grid rounded border border-line bg-paper-raised px-8 py-14">
+          <p className="text-sm text-forest-deep">생산부터 유통까지 하나의 흐름으로</p>
+          <h1 className="mt-2 max-w-xl font-display text-4xl font-bold leading-tight text-ink">
+            휴경농지와 스마트팜, 유통을 잇는 AI 워크스테이션
+          </h1>
+          <p className="mt-4 max-w-lg text-sm text-ink-muted">
+            시세를 예측하고 도매처를 추천하며, 방치된 농지를 새 농업인과 연결합니다.
+            아래에서 역할에 맞는 화면으로 이동하세요.
+          </p>
+        </section>
 
-      <div className="flex-1 flex min-h-0">
-        {/* Left column: Watchlist + Trade bar */}
-        <div className="w-80 flex flex-col border-r border-border bg-bg-panel shrink-0">
-          <div className="flex-1 min-h-0">
-            <Watchlist
-              items={watchlist}
-              prices={prices}
-              getHistory={getHistory}
-              selectedTicker={selectedTicker}
-              onSelectTicker={setUserSelectedTicker}
-              onRefresh={refreshWatchlist}
+        <section aria-labelledby="entry-heading" className="mt-8">
+          <h2 id="entry-heading" className="sr-only">
+            화면 선택
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <EntryCard
+              href="/farm"
+              title="농가 대시보드"
+              description="현재 작물, 예상 수확량, 스마트팜 상태와 AI 추천 도매처를 확인합니다."
+              accent="#2f5233"
+            />
+            <EntryCard
+              href="/distributor"
+              title="유통업체 대시보드"
+              description="AI가 추천한 농가와 시장 분석을 보고 거래를 요청합니다."
+              accent="#b98a1d"
+            />
+            <EntryCard
+              href="/idle-land"
+              title="유휴토지 지도"
+              description="휴경농지 현황을 지도에서 확인하고 조건을 비교합니다."
+              accent="#a24328"
             />
           </div>
-          <TradeBar prices={prices} onTradeExecuted={refreshAll} />
-        </div>
-
-        {/* Center: Charts + Positions */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Top row: Price Chart + Portfolio Heatmap */}
-          <div className="flex-1 flex min-h-0">
-            <div className="flex-[2] border-r border-border min-w-0">
-              <PriceChart ticker={selectedTicker} getHistory={getHistory} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <PortfolioHeatmap positions={portfolio?.positions ?? []} />
-            </div>
-          </div>
-
-          {/* Bottom row: Positions + P&L Chart */}
-          <div className="h-[40%] flex border-t border-border min-h-0">
-            <div className="flex-1 border-r border-border min-w-0">
-              <PositionsTable positions={portfolio?.positions ?? []} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <PnlChart />
-            </div>
-          </div>
-        </div>
-
-        {/* Right column: Chat panel */}
-        <div className="w-80 shrink-0">
-          <ChatPanel onTradeExecuted={refreshAll} />
-        </div>
-      </div>
+        </section>
+      </main>
     </div>
-  );
+  )
 }
