@@ -1,182 +1,240 @@
-"""Tests for the LLM service (mock mode) and action execution."""
+"""Tests for the LLM service layer. The real litellm.completion is always
+mocked here -- no network/API calls are made."""
 
+import json
 
 import pytest
 
-from app.db import (
-    get_cash_balance,
-    get_position,
-    get_watchlist,
-    init_db,
-    set_db_path,
-    upsert_position,
+from app.llm import service as service_module
+from app.llm.models import (
+    FarmlandOption,
+    FarmlandRequest,
+    ProduceLot,
+    ResponseOption,
+    ShippingDateOption,
+    SupplyRiskInput,
+    WholesalerOption,
 )
-from app.llm.models import LlmResponse, TradeAction, WatchlistChange
-from app.llm.service import _build_context, _execute_actions, chat_with_llm
-from app.market import MarketDataSource, PriceCache
+from app.llm.service import LlmServiceError, run_chat_assistant
 
 
-class FakeMarketSource(MarketDataSource):
-    """Minimal MarketDataSource test double that just records calls."""
-
-    def __init__(self):
-        self.added: list[str] = []
-        self.removed: list[str] = []
-
-    async def start(self, tickers):
-        pass
-
-    async def stop(self):
-        pass
-
-    async def add_ticker(self, ticker):
-        self.added.append(ticker)
-
-    async def remove_ticker(self, ticker):
-        self.removed.append(ticker)
-
-    def get_tickers(self):
-        return []
+class FakeFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
 
 
-@pytest.fixture
-async def test_db(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    set_db_path(db_path)
-    await init_db()
-    yield db_path
-    set_db_path(str(tmp_path / "unused.db"))
+class FakeToolCall:
+    def __init__(self, call_id, name, arguments):
+        self.id = call_id
+        self.function = FakeFunction(name, arguments)
 
 
-@pytest.fixture
-def price_cache():
-    cache = PriceCache()
-    cache.update("AAPL", 190.50)
-    cache.update("GOOGL", 175.25)
-    cache.update("MSFT", 420.00)
-    cache.update("AMZN", 185.00)
-    cache.update("TSLA", 250.00)
-    cache.update("NVDA", 880.00)
-    cache.update("META", 500.00)
-    cache.update("JPM", 195.00)
-    cache.update("V", 280.00)
-    cache.update("NFLX", 620.00)
-    return cache
+class FakeMessage:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class FakeChoice:
+    def __init__(self, message):
+        self.message = message
+
+
+class FakeResponse:
+    def __init__(self, message):
+        self.choices = [FakeChoice(message)]
+
+
+def _content_response(payload: dict) -> FakeResponse:
+    return FakeResponse(FakeMessage(content=json.dumps(payload, ensure_ascii=False)))
 
 
 @pytest.fixture
-def market_source():
-    return FakeMarketSource()
+def price_forecast_options():
+    return [
+        ShippingDateOption(
+            date="2025-08-08",
+            expected_wholesale_price_per_kg=2450,
+            expected_revenue=2_450_000,
+            price_change_percent=0,
+            market_supply_condition="공급량 보통",
+        ),
+        ShippingDateOption(
+            date="2025-08-10",
+            expected_wholesale_price_per_kg=2580,
+            expected_revenue=2_580_000,
+            price_change_percent=5.3,
+            market_supply_condition="공급량 감소 예상",
+        ),
+    ]
 
 
-class TestBuildContext:
-    async def test_builds_context_with_defaults(self, test_db, price_cache):
-        ctx = await _build_context(price_cache)
-        assert ctx["cash"] == 10000.0
-        assert ctx["positions"] == []
-        assert len(ctx["watchlist"]) == 10
-        assert ctx["total_value"] == 10000.0
-
-    async def test_context_with_position(self, test_db, price_cache):
-        await upsert_position("AAPL", 10, 180.0)
-        ctx = await _build_context(price_cache)
-        assert len(ctx["positions"]) == 1
-        pos = ctx["positions"][0]
-        assert pos["ticker"] == "AAPL"
-        assert pos["quantity"] == 10
-        assert pos["current_price"] == 190.50
-        assert pos["unrealized_pnl"] == 105.0  # (190.50 - 180) * 10
-
-
-class TestExecuteActions:
-    async def test_execute_buy(self, test_db, price_cache, market_source):
-        resp = LlmResponse(
-            message="Buying",
-            trades=[TradeAction(ticker="AAPL", side="buy", quantity=5)],
-        )
-        results = await _execute_actions(resp, price_cache, market_source)
-        assert results["trades"][0]["status"] == "executed"
-        assert results["trades"][0]["price"] == 190.50
-
-        cash = await get_cash_balance()
-        assert cash == pytest.approx(10000 - 190.50 * 5)
-
-        pos = await get_position("AAPL")
-        assert pos["quantity"] == 5
-
-    async def test_execute_sell_insufficient_shares(self, test_db, price_cache, market_source):
-        resp = LlmResponse(
-            message="Selling",
-            trades=[TradeAction(ticker="AAPL", side="sell", quantity=5)],
-        )
-        results = await _execute_actions(resp, price_cache, market_source)
-        assert "error" in results["trades"][0]
-        assert "Insufficient shares" in results["trades"][0]["error"]
-
-    async def test_execute_buy_insufficient_cash(self, test_db, price_cache, market_source):
-        resp = LlmResponse(
-            message="Buying",
-            trades=[TradeAction(ticker="NVDA", side="buy", quantity=100)],
-        )
-        results = await _execute_actions(resp, price_cache, market_source)
-        assert "error" in results["trades"][0]
-        assert "Insufficient cash" in results["trades"][0]["error"]
-
-    async def test_execute_watchlist_add(self, test_db, price_cache, market_source):
-        resp = LlmResponse(
-            message="Adding",
-            watchlist_changes=[WatchlistChange(ticker="PYPL", action="add")],
-        )
-        results = await _execute_actions(resp, price_cache, market_source)
-        assert results["watchlist_changes"][0]["status"] == "done"
-
-        wl = await get_watchlist()
-        tickers = [w["ticker"] for w in wl]
-        assert "PYPL" in tickers
-        assert market_source.added == ["PYPL"]
-
-    async def test_execute_watchlist_remove(self, test_db, price_cache, market_source):
-        resp = LlmResponse(
-            message="Removing",
-            watchlist_changes=[WatchlistChange(ticker="AAPL", action="remove")],
-        )
-        results = await _execute_actions(resp, price_cache, market_source)
-        assert results["watchlist_changes"][0]["status"] == "done"
-
-        wl = await get_watchlist()
-        tickers = [w["ticker"] for w in wl]
-        assert "AAPL" not in tickers
-        assert market_source.removed == ["AAPL"]
-        assert price_cache.get("AAPL") is None
-
-    async def test_no_price_available(self, test_db, price_cache, market_source):
-        resp = LlmResponse(
-            message="Buying",
-            trades=[TradeAction(ticker="ZZZZ", side="buy", quantity=1)],
-        )
-        results = await _execute_actions(resp, price_cache, market_source)
-        assert "error" in results["trades"][0]
-        assert "No price" in results["trades"][0]["error"]
-
-
-class TestChatWithLlmMock:
-    @pytest.fixture(autouse=True)
-    def set_mock_mode(self, monkeypatch):
+class TestExplainPriceForecastMockMode:
+    async def test_delegates_to_mock(self, monkeypatch, price_forecast_options):
         monkeypatch.setenv("LLM_MOCK", "true")
+        result = await service_module.explain_price_forecast("토마토", price_forecast_options)
+        assert result.crop_name == "토마토"
+        assert result.recommended_date == "2025-08-10"
 
-    async def test_greeting(self, test_db, price_cache, market_source):
-        result = await chat_with_llm("hello", price_cache, market_source)
-        assert "FinAlly" in result["message"]
-        assert result["trades"] == []
 
-    async def test_buy_executes(self, test_db, price_cache, market_source):
-        result = await chat_with_llm("buy 5 AAPL", price_cache, market_source)
-        assert len(result["trades"]) == 1
-        assert result["trades"][0]["status"] == "executed"
+class TestExplainPriceForecastRealMode:
+    async def test_parses_structured_response(self, monkeypatch, price_forecast_options):
+        monkeypatch.delenv("LLM_MOCK", raising=False)
+        payload = {
+            "crop_name": "토마토",
+            "summary": "요약",
+            "recommended_date": "2025-08-10",
+            "recommendation_reason": "가장 높은 판매금액입니다.",
+            "options": [
+                {"date": "2025-08-08", "explanation": "기준일", "system_guidance": "즉시 출하 가능"},
+                {"date": "2025-08-10", "explanation": "상승 예상", "system_guidance": "출하 유지 권장"},
+            ],
+        }
+        monkeypatch.setattr(
+            service_module, "completion", lambda **kwargs: _content_response(payload)
+        )
+        result = await service_module.explain_price_forecast("토마토", price_forecast_options)
+        assert result.recommended_date == "2025-08-10"
+        assert result.options[0].system_guidance == "즉시 출하 가능"
 
-        pos = await get_position("AAPL")
-        assert pos["quantity"] == 5
+    async def test_raises_after_retries_exhausted(self, monkeypatch, price_forecast_options):
+        monkeypatch.delenv("LLM_MOCK", raising=False)
 
-    async def test_portfolio_analysis(self, test_db, price_cache, market_source):
-        result = await chat_with_llm("show my portfolio", price_cache, market_source)
-        assert "10,000.00" in result["message"]
+        def always_fails(**kwargs):
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(service_module, "completion", always_fails)
+        with pytest.raises(LlmServiceError):
+            await service_module.explain_price_forecast("토마토", price_forecast_options)
+
+
+class TestRecommendWholesalerMockMode:
+    async def test_delegates_to_mock(self, monkeypatch):
+        monkeypatch.setenv("LLM_MOCK", "true")
+        options = [
+            WholesalerOption(
+                name="A", purchase_price_per_kg=2550, purchase_quantity_kg=1000,
+                transport_cost=180_000, net_profit=2_395_000, rank=2,
+            ),
+            WholesalerOption(
+                name="B", purchase_price_per_kg=2580, purchase_quantity_kg=1000,
+                transport_cost=80_000, net_profit=2_422_600, rank=1,
+            ),
+        ]
+        result = await service_module.recommend_wholesaler("토마토", options)
+        assert result.recommended_wholesaler == "B"
+
+
+class TestRecommendBuyersMockMode:
+    async def test_delegates_to_mock(self, monkeypatch):
+        monkeypatch.setenv("LLM_MOCK", "true")
+        lots = [ProduceLot(lot_id="l1", grade="특상품", quantity_kg=300, condition_note="균일함")]
+        result = await service_module.recommend_buyers(lots)
+        assert result.matches[0].recommended_buyer_type == "소매점"
+
+
+class TestGenerateSupplyRiskAlertMockMode:
+    async def test_delegates_to_mock(self, monkeypatch):
+        monkeypatch.setenv("LLM_MOCK", "true")
+        risk_input = SupplyRiskInput(
+            region="충남", crop_name="양파", farm_planned_shipment_ton=120,
+            wholesaler_existing_stock_ton=8, total_supply_ton=128, buyer_demand_ton=100,
+            excess_supply_ton=28, risk_level="위험",
+            response_options=[ResponseOption(channel="출하 시기 조정", processed_volume_ton=7)],
+        )
+        result = await service_module.generate_supply_risk_alert(risk_input)
+        assert result.risk_level == "위험"
+
+
+class TestRecommendFarmlandMockMode:
+    async def test_delegates_to_mock(self, monkeypatch):
+        monkeypatch.setenv("LLM_MOCK", "true")
+        request = FarmlandRequest(desired_crop="딸기", desired_area_pyeong=900, budget_monthly_rent=650_000)
+        options = [
+            FarmlandOption(
+                name="A", area_pyeong=900, monthly_rent=650_000, water_access=True,
+                cold_storage_access="가능", distance_to_wholesaler_km=24, rank=1,
+            ),
+        ]
+        result = await service_module.recommend_farmland(request, options)
+        assert result.recommended_farmland == "A"
+
+
+class TestRunChatAssistantMockMode:
+    async def test_delegates_to_mock(self, monkeypatch):
+        monkeypatch.setenv("LLM_MOCK", "true")
+        result = await run_chat_assistant("안녕", [], {})
+        assert "울퉁불퉁 농장 AI" in result.message
+
+
+class TestRunChatAssistantRealMode:
+    async def test_tool_call_then_final_message(self, monkeypatch):
+        monkeypatch.delenv("LLM_MOCK", raising=False)
+
+        tool_call = FakeToolCall(
+            "call-1",
+            "create_trade_request",
+            json.dumps({"crop_name": "토마토", "quantity_kg": 500, "counterparty_name": "B도매처"}),
+        )
+        responses = [
+            FakeResponse(FakeMessage(content=None, tool_calls=[tool_call])),
+            FakeResponse(FakeMessage(content="B도매처에 거래 요청을 보냈습니다.", tool_calls=None)),
+        ]
+
+        def fake_completion(**kwargs):
+            return responses.pop(0)
+
+        monkeypatch.setattr(service_module, "completion", fake_completion)
+
+        executed = []
+
+        async def create_trade_request(**kwargs):
+            executed.append(kwargs)
+            return {"request_id": "req-1"}
+
+        result = await run_chat_assistant(
+            "토마토 500kg B도매처에 거래 요청해줘",
+            [],
+            {"create_trade_request": create_trade_request},
+        )
+
+        assert executed == [{"crop_name": "토마토", "quantity_kg": 500, "counterparty_name": "B도매처"}]
+        assert result.message == "B도매처에 거래 요청을 보냈습니다."
+        assert result.tool_calls[0].result == {"request_id": "req-1"}
+
+    async def test_no_tool_call_returns_plain_message(self, monkeypatch):
+        monkeypatch.delenv("LLM_MOCK", raising=False)
+        monkeypatch.setattr(
+            service_module,
+            "completion",
+            lambda **kwargs: FakeResponse(FakeMessage(content="시세가 안정적입니다.", tool_calls=None)),
+        )
+        result = await run_chat_assistant("요즘 토마토 시세 어때요?", [], {})
+        assert result.message == "시세가 안정적입니다."
+        assert result.tool_calls == []
+
+    async def test_completion_failure_returns_fallback_message(self, monkeypatch):
+        monkeypatch.delenv("LLM_MOCK", raising=False)
+
+        def always_fails(**kwargs):
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(service_module, "completion", always_fails)
+        result = await run_chat_assistant("안녕", [], {})
+        assert "오류가 발생했습니다" in result.message
+        assert result.tool_calls == []
+
+    async def test_unknown_tool_reports_error_but_continues(self, monkeypatch):
+        monkeypatch.delenv("LLM_MOCK", raising=False)
+
+        tool_call = FakeToolCall("call-1", "no_such_tool", "{}")
+        responses = [
+            FakeResponse(FakeMessage(content=None, tool_calls=[tool_call])),
+            FakeResponse(FakeMessage(content="처리했습니다.", tool_calls=None)),
+        ]
+        monkeypatch.setattr(service_module, "completion", lambda **kwargs: responses.pop(0))
+
+        result = await run_chat_assistant("이상한 요청", [], {})
+        assert result.tool_calls[0].error is not None
+        assert result.message == "처리했습니다."

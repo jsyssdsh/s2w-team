@@ -1,5 +1,64 @@
-"""LLM integration for FinAlly chat assistant."""
+"""LLM integration for the 울퉁불퉁 농장 AI produce distribution assistant."""
 
-from .service import chat_with_llm
+from .models import (
+    BuyerMatch,
+    BuyerRecommendation,
+    ChatAssistantResult,
+    FarmlandOption,
+    FarmlandOptionExplanation,
+    FarmlandRecommendation,
+    FarmlandRequest,
+    PriceForecastExplanation,
+    ProduceLot,
+    ResponseOption,
+    ResponsePlanItem,
+    ShipmentTimingAdvice,
+    ShippingDateOption,
+    SupplyRiskAlert,
+    SupplyRiskInput,
+    ToolCallOutcome,
+    WholesalerOption,
+    WholesalerOptionExplanation,
+    WholesalerRecommendation,
+)
+from .service import (
+    LlmServiceError,
+    explain_price_forecast,
+    generate_supply_risk_alert,
+    recommend_buyers,
+    recommend_farmland,
+    recommend_wholesaler,
+    run_chat_assistant,
+)
+from .tools import CHAT_TOOLS, ToolExecutor
 
-__all__ = ["chat_with_llm"]
+__all__ = [
+    "LlmServiceError",
+    "explain_price_forecast",
+    "recommend_wholesaler",
+    "recommend_buyers",
+    "generate_supply_risk_alert",
+    "recommend_farmland",
+    "run_chat_assistant",
+    "CHAT_TOOLS",
+    "ToolExecutor",
+    "BuyerMatch",
+    "BuyerRecommendation",
+    "ChatAssistantResult",
+    "FarmlandOption",
+    "FarmlandOptionExplanation",
+    "FarmlandRecommendation",
+    "FarmlandRequest",
+    "PriceForecastExplanation",
+    "ProduceLot",
+    "ResponseOption",
+    "ResponsePlanItem",
+    "ShipmentTimingAdvice",
+    "ShippingDateOption",
+    "SupplyRiskAlert",
+    "SupplyRiskInput",
+    "ToolCallOutcome",
+    "WholesalerOption",
+    "WholesalerOptionExplanation",
+    "WholesalerRecommendation",
+]
